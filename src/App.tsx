@@ -37,6 +37,7 @@ export default function App() {
   const [panel, setPanel] = useState<null | 'missions' | 'map' | 'help'>(null);
   const [bloom, setBloom] = useState(true);
   const [fogFar, setFogFar] = useState(3000);
+  const [reflect, setReflect] = useState(true);
   const idRef = useRef(0);
 
   const pushToast = useCallback((m: GameMessage) => {
@@ -93,6 +94,10 @@ export default function App() {
   useEffect(() => {
     gameRef.current?.setFogFar(fogFar);
   }, [fogFar, ready]);
+
+  useEffect(() => {
+    gameRef.current?.setReflections(reflect);
+  }, [reflect, ready]);
 
   // keys for panels
   useEffect(() => {
@@ -407,6 +412,10 @@ export default function App() {
             <label className="mt-4 flex cursor-pointer items-center gap-2 text-sm">
               <input type="checkbox" checked={bloom} onChange={(e) => setBloom(e.target.checked)} />
               Cinematic bloom &amp; HDR post-processing
+            </label>
+            <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm">
+              <input type="checkbox" checked={reflect} onChange={(e) => setReflect(e.target.checked)} />
+              انعكاسات السماء على الأسطح · Surface reflections
             </label>
             <label className="mt-3 block text-sm">
               <span className="flex items-center justify-between">

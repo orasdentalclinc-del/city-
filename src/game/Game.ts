@@ -229,9 +229,10 @@ export class Game {
     const pmrem = new THREE.PMREMGenerator(renderer);
     const envRT = pmrem.fromScene(envScene, 0, 1, 10000);
     this.scene.environment = envRT.texture;
-    // Env light was double-lighting every surface (0.55 on top of sun 3.1).
-    // 0.32 keeps sky reflections but lets shadows and contrast survive.
-    this.scene.environmentIntensity = 0.38;
+    // The sky env map is also the source of the "shiny objects" look: every
+    // metal/clearcoat surface mirrors it. Keep it low and let the diffuse
+    // hemisphere light do the fill, so surfaces read as matte daylight.
+    this.scene.environmentIntensity = 0.16;
     pmrem.dispose();
 
     // Aerial perspective only in the far distance. Colour is warm sand haze
@@ -255,7 +256,7 @@ export class Game {
     // Softer shadows: less harsh black/white contrast under the desert sun.
     this.sun.shadow.intensity = 0.62;
     this.scene.add(this.sun, this.sun.target);
-    this.scene.add(new THREE.HemisphereLight(0xcfe3ff, 0xcdb88c, 0.4));
+    this.scene.add(new THREE.HemisphereLight(0xcfe3ff, 0xcdb88c, 0.55));
 
     // ---- ground ----
     const groundCanvas = drawGroundMap(4096);
@@ -269,7 +270,7 @@ export class Game {
     const gp = gg.attributes.position as THREE.BufferAttribute;
     for (let i = 0; i < gp.count; i++) gp.setY(i, heightAt(gp.getX(i), gp.getZ(i)));
     gg.computeVertexNormals();
-    const groundMat = new THREE.MeshStandardMaterial({ map: gtex, roughness: 0.96, metalness: 0, envMapIntensity: 0.4 });
+    const groundMat = new THREE.MeshStandardMaterial({ map: gtex, roughness: 0.96, metalness: 0, envMapIntensity: 0.08 });
     const ground = new THREE.Mesh(gg, groundMat);
     ground.receiveShadow = true;
     this.scene.add(ground);
@@ -290,7 +291,7 @@ export class Game {
     shape.holes.push(hole);
     const og = new THREE.ShapeGeometry(shape);
     og.rotateX(-Math.PI / 2);
-    const outer = new THREE.Mesh(og, new THREE.MeshStandardMaterial({ color: 0xc6ad7c, roughness: 1, side: THREE.DoubleSide, envMapIntensity: 0.3 }));
+    const outer = new THREE.Mesh(og, new THREE.MeshStandardMaterial({ color: 0xc6ad7c, roughness: 1, side: THREE.DoubleSide, envMapIntensity: 0.05 }));
     outer.position.y = 3;
     outer.receiveShadow = true;
     this.scene.add(outer);
@@ -309,7 +310,7 @@ export class Game {
         opacity: 0.9,
         normalMap: this.waterNormal,
         normalScale: new THREE.Vector2(0.35, 0.35),
-        envMapIntensity: 0.85,
+        envMapIntensity: 0.7,
         clearcoat: 0.25,
       })
     );
@@ -349,16 +350,17 @@ export class Game {
     const rt = new THREE.WebGLRenderTarget(container.clientWidth, container.clientHeight, { type: THREE.HalfFloatType, samples: 4 });
     this.composer = new EffectComposer(renderer, rt);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    // Subtle bloom only: threshold above 1.0 so ordinary lit surfaces never
-    // glow. Previously 0.93 with strength 0.22 made the whole sky bloom out.
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(container.clientWidth, container.clientHeight), 0.14, 0.45, 1.15);
+    // Bloom is limited to genuine light sources. With sunlit walls around
+    // 1.5-2.0 in HDR, any threshold near 1 made every wall glow and read as
+    // reflected glare, so the cutoff sits well above them.
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(container.clientWidth, container.clientHeight), 0.12, 0.35, 2.6);
     this.composer.addPass(this.bloom);
 
     // Glare guard + gentle colour grade (runs in linear HDR, before OutputPass).
     this.gradePass = new ShaderPass({
       uniforms: {
         tDiffuse: { value: null },
-        uKnee: { value: 1.8 },
+        uKnee: { value: 2.4 },
         uGlare: { value: 0 },
       },
       vertexShader: /* glsl */ `
@@ -472,6 +474,10 @@ export class Game {
     } catch {
       /* ignore */
     }
+  }
+  /** Sky reflections on glass/metal/paint (main source of surface glare). */
+  setReflections(on: boolean) {
+    this.scene.environmentIntensity = on ? 0.16 : 0;
   }
   /** Far distance of the aerial haze in metres (higher = clearer view). */
   setFogFar(meters: number) {
@@ -1317,7 +1323,7 @@ export class Game {
     this.glareFactor = THREE.MathUtils.smoothstep(toSun, 0.55, 0.985);
     const target = this.glareGuard ? this.glareFactor : 0;
     this.gradePass.uniforms.uGlare.value += (target - this.gradePass.uniforms.uGlare.value) * (1 - Math.exp(-6 * dt));
-    this.bloom.strength = this.useBloom ? 0.14 * (1 - this.glareFactor * 0.75) : 0;
+    this.bloom.strength = this.useBloom ? 0.12 * (1 - this.glareFactor * 0.75) : 0;
     // Slight exposure relief while sun is in view keeps the HUD readable.
     this.renderer.toneMappingExposure = 0.92 - this.glareFactor * 0.08;
   }

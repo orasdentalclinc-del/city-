@@ -66,7 +66,7 @@ const gold = plain(0xd6a62a, 0.3, 0.9);
 const domeGreen = plain(0x2f9a74, 0.35, 0.4);
 const stone = plain(0x9a958a, 0.9);
 const darkMat = plain(0x1f2a33, 0.4, 0.5);
-const towerGlass = new THREE.MeshPhysicalMaterial({ color: 0x35607f, metalness: 0.85, roughness: 0.08, clearcoat: 1, side: THREE.DoubleSide, envMapIntensity: 1.6 });
+const towerGlass = new THREE.MeshPhysicalMaterial({ color: 0x35607f, metalness: 0.85, roughness: 0.08, clearcoat: 1, side: THREE.DoubleSide, envMapIntensity: 0.75 });
 const lawn = plain(0x5f8a35, 1);
 const waterMat = new THREE.MeshStandardMaterial({ color: 0x4aa3c8, roughness: 0.05, metalness: 0.2 });
 
