@@ -122,8 +122,6 @@ export class Game {
   private sun: THREE.DirectionalLight;
   private sunDir: THREE.Vector3;
   private sunBaseIntensity = 2.15;
-  private dust: THREE.Points | null = null;
-  private dustVel: Float32Array | null = null;
   private glareFactor = 0;
   private waterNormal: THREE.CanvasTexture;
   private colliders = new Colliders();
@@ -192,7 +190,7 @@ export class Game {
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     // Balanced exposure: bright desert sun without blowing out to white.
     // (Was 0.75 with a 3.1-intensity sun + strong env light = washed-out glare.)
-    renderer.toneMappingExposure = 1.02;
+    renderer.toneMappingExposure = 0.92;
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.width = '100%';
     renderer.domElement.style.height = '100%';
@@ -216,13 +214,11 @@ export class Game {
       u.mieCoefficient.value = 0.0032;
       u.mieDirectionalG.value = 0.78;
       u.sunPosition.value.copy(this.sunDir);
-      // Thin, high desert cirrus from the sky shader itself (sun-lit, and it
-      // occludes the disc naturally instead of flat billboard sprites).
-      u.cloudCoverage.value = 0.2;
-      u.cloudDensity.value = 0.35;
-      u.cloudScale.value = 0.00022;
-      u.cloudElevation.value = 0.45;
-      u.cloudSpeed.value = 0.0025;
+      // Clear Khartoum sky: no procedural cloud sheet (it read as a moving
+      // white veil and hid the skyline).
+      u.cloudCoverage.value = 0;
+      u.cloudDensity.value = 0;
+      u.cloudSpeed.value = 0.00002;
       u.time.value = 0;
       return s;
     };
@@ -235,12 +231,13 @@ export class Game {
     this.scene.environment = envRT.texture;
     // Env light was double-lighting every surface (0.55 on top of sun 3.1).
     // 0.32 keeps sky reflections but lets shadows and contrast survive.
-    this.scene.environmentIntensity = 0.32;
+    this.scene.environmentIntensity = 0.38;
     pmrem.dispose();
 
-    // Linear fog with a real near plane: distant city stays readable instead
-    // of dissolving into pale beige (old FogExp2 0.0016 fogged ~50% at 500 m).
-    this.scene.fog = new THREE.Fog(0xd9cfb8, 220, 1650);
+    // Aerial perspective only in the far distance. Colour is warm sand haze
+    // (a blue-grey haze made the desert floor read like water), and the start
+    // plane is far enough that the streets around the player stay crisp.
+    this.scene.fog = new THREE.Fog(0xd8d0bd, 700, 3000);
 
     this.sun = new THREE.DirectionalLight(0xfff1d6, this.sunBaseIntensity);
     this.sun.castShadow = true;
@@ -258,7 +255,7 @@ export class Game {
     // Softer shadows: less harsh black/white contrast under the desert sun.
     this.sun.shadow.intensity = 0.62;
     this.scene.add(this.sun, this.sun.target);
-    this.scene.add(new THREE.HemisphereLight(0xcfe3ff, 0xcdb88c, 0.32));
+    this.scene.add(new THREE.HemisphereLight(0xcfe3ff, 0xcdb88c, 0.4));
 
     // ---- ground ----
     const groundCanvas = drawGroundMap(4096);
@@ -272,28 +269,7 @@ export class Game {
     const gp = gg.attributes.position as THREE.BufferAttribute;
     for (let i = 0; i < gp.count; i++) gp.setY(i, heightAt(gp.getX(i), gp.getZ(i)));
     gg.computeVertexNormals();
-    const groundMat = new THREE.MeshStandardMaterial({ map: gtex, roughness: 0.96, metalness: 0, envMapIntensity: 0.35 });
-    // Close-range detail: the 4096px map covers 1400 m, so up close it is a
-    // blur. Blend a repeating noise detail layer that fades with distance.
-    const detailTex = this.makeDetailTexture();
-    groundMat.onBeforeCompile = (shader) => {
-      shader.uniforms.uDetail = { value: detailTex };
-      shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vWPosG;')
-        .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvWPosG = (modelMatrix * vec4(transformed, 1.0)).xyz;');
-      shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vWPosG;\nuniform sampler2D uDetail;')
-        .replace(
-          '#include <color_fragment>',
-          `#include <color_fragment>
-          {
-            vec3 det = texture2D(uDetail, vWPosG.xz / 7.0).rgb;
-            float dist = length(vWPosG - cameraPosition);
-            float fade = exp(-dist * 0.012);
-            diffuseColor.rgb *= mix(1.0, det, fade * 0.35);
-          }`
-        );
-    };
+    const groundMat = new THREE.MeshStandardMaterial({ map: gtex, roughness: 0.96, metalness: 0, envMapIntensity: 0.4 });
     const ground = new THREE.Mesh(gg, groundMat);
     ground.receiveShadow = true;
     this.scene.add(ground);
@@ -382,10 +358,8 @@ export class Game {
     this.gradePass = new ShaderPass({
       uniforms: {
         tDiffuse: { value: null },
-        uKnee: { value: 1.0 },
+        uKnee: { value: 1.8 },
         uGlare: { value: 0 },
-        uTime: { value: 0 },
-        uResolution: { value: new THREE.Vector2(container.clientWidth, container.clientHeight) },
       },
       vertexShader: /* glsl */ `
         varying vec2 vUv;
@@ -398,8 +372,6 @@ export class Game {
         uniform sampler2D tDiffuse;
         uniform float uKnee;
         uniform float uGlare;
-        uniform float uTime;
-        uniform vec2 uResolution;
         varying vec2 vUv;
 
         void main() {
@@ -409,11 +381,11 @@ export class Game {
           // Very bright pixels (sun disc, specular hits) are compressed instead
           // of clipping to pure white, so the view stays readable when facing
           // the sun. Amount increases slightly while the sun is in frame.
-          float knee = mix(uKnee, uKnee * 0.62, uGlare);
+          float knee = mix(uKnee, uKnee * 0.7, uGlare);
           float peak = max(max(col.r, col.g), col.b);
           if (peak > knee) {
             float excess = peak - knee;
-            float compressed = knee + excess / (1.0 + excess * (1.6 + uGlare * 1.4));
+            float compressed = knee + excess / (1.0 + excess * (0.9 + uGlare * 1.1));
             col *= compressed / peak;
           }
 
@@ -424,15 +396,7 @@ export class Game {
           col = (col - 0.18) * 1.04 + 0.18;
 
           // subtle warm desert tint in the highlights, cool in the shadows
-          col *= mix(vec3(0.97, 0.99, 1.03), vec3(1.03, 1.0, 0.96), smoothstep(0.05, 0.7, luma));
-
-          // --- vignette + fine grain for a natural, filmed look ---
-          vec2 d = vUv - 0.5;
-          float vig = 1.0 - dot(d, d) * 0.55;
-          col *= vig;
-
-          float g = fract(sin(dot(vUv * uResolution + uTime * 60.0, vec2(12.9898, 78.233))) * 43758.5453);
-          col += (g - 0.5) * 0.012;
+          col *= mix(vec3(0.99, 0.995, 1.01), vec3(1.02, 1.0, 0.975), smoothstep(0.05, 0.7, luma));
 
           gl_FragColor = vec4(col, 1.0);
         }
@@ -441,8 +405,6 @@ export class Game {
     this.composer.addPass(this.gradePass);
     this.composer.addPass(new OutputPass());
 
-    // ---- airborne dust (desert atmosphere) ----
-    this.buildDust();
 
     // ---- save ----
     try {
@@ -510,6 +472,13 @@ export class Game {
     } catch {
       /* ignore */
     }
+  }
+  /** Far distance of the aerial haze in metres (higher = clearer view). */
+  setFogFar(meters: number) {
+    const fog = this.scene.fog as THREE.Fog | null;
+    if (!fog || !('near' in fog)) return;
+    fog.near = Math.max(120, meters * 0.23);
+    fog.far = meters;
   }
   setBloom(on: boolean) {
     this.useBloom = on;
@@ -679,113 +648,6 @@ export class Game {
       this.peds.push({ human, axis, fixed, v, lo, hi, dir: this.rng() < 0.5 ? -1 : 1, speed: 1.1 + this.rng() * 1.2, phase: this.rng() * 6, x: p0.x, z: p0.z });
       n++;
     }
-  }
-
-  /** Fine dust motes drifting in the air around the player. */
-  private buildDust() {
-    const count = 700;
-    const pos = new Float32Array(count * 3);
-    const vel = new Float32Array(count * 3);
-    const rnd = mulberry32(31);
-    for (let i = 0; i < count; i++) {
-      pos[i * 3] = (rnd() - 0.5) * 90;
-      pos[i * 3 + 1] = rnd() * 26;
-      pos[i * 3 + 2] = (rnd() - 0.5) * 90;
-      vel[i * 3] = 0.35 + rnd() * 0.5;
-      vel[i * 3 + 1] = 0.05 + rnd() * 0.16;
-      vel[i * 3 + 2] = (rnd() - 0.5) * 0.4;
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    const cv = document.createElement('canvas');
-    cv.width = cv.height = 32;
-    const c = cv.getContext('2d')!;
-    const grd = c.createRadialGradient(16, 16, 0, 16, 16, 16);
-    grd.addColorStop(0, 'rgba(255,246,224,1)');
-    grd.addColorStop(0.45, 'rgba(255,240,210,0.55)');
-    grd.addColorStop(1, 'rgba(255,238,200,0)');
-    c.fillStyle = grd;
-    c.fillRect(0, 0, 32, 32);
-    const tex = new THREE.CanvasTexture(cv);
-    const mat = new THREE.PointsMaterial({
-      size: 0.32,
-      map: tex,
-      transparent: true,
-      opacity: 0.42,
-      depthWrite: false,
-      sizeAttenuation: true,
-      color: 0xfff0d2,
-      blending: THREE.NormalBlending,
-    });
-    this.dust = new THREE.Points(geo, mat);
-    this.dust.frustumCulled = false;
-    this.dustVel = vel;
-    this.scene.add(this.dust);
-  }
-
-  /** Keeps the dust cloud centred on the camera and drifting with the wind. */
-  private updateDust(dt: number) {
-    if (!this.dust || !this.dustVel) return;
-    const pos = this.dust.geometry.attributes.position as THREE.BufferAttribute;
-    const arr = pos.array as Float32Array;
-    const cx = this.camera.position.x;
-    const cz = this.camera.position.z;
-    for (let i = 0; i < arr.length; i += 3) {
-      arr[i] += this.dustVel[i] * dt;
-      arr[i + 1] += this.dustVel[i + 1] * dt;
-      arr[i + 2] += this.dustVel[i + 2] * dt;
-      let dx = arr[i] - cx;
-      let dz = arr[i + 2] - cz;
-      const dy = arr[i + 1];
-      if (dx > 45) arr[i] -= 90;
-      else if (dx < -45) arr[i] += 90;
-      if (dz > 45) arr[i + 2] -= 90;
-      else if (dz < -45) arr[i + 2] += 90;
-      if (dy > 26) arr[i + 1] -= 26;
-      else if (dy < 0) arr[i + 1] += 26;
-    }
-    pos.needsUpdate = true;
-  }
-
-  /** Soft granular detail layer blended into the ground near the camera. */
-  private makeDetailTexture() {
-    const size = 256;
-    const cv = document.createElement('canvas');
-    cv.width = cv.height = size;
-    const c = cv.getContext('2d')!;
-    const img = c.createImageData(size, size);
-    const rnd = mulberry32(99);
-    // value-noise ripple + fine grain
-    const cells = 16;
-    const grid = new Float32Array((cells + 1) * (cells + 1));
-    for (let i = 0; i < grid.length; i++) grid[i] = rnd();
-    const at = (x: number, y: number) => grid[(y % cells) * (cells + 1) + (x % cells)];
-    const smooth = (t: number) => t * t * (3 - 2 * t);
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const gx = (x / size) * cells;
-        const gy = (y / size) * cells;
-        const x0 = Math.floor(gx);
-        const y0 = Math.floor(gy);
-        const fx = smooth(gx - x0);
-        const fy = smooth(gy - y0);
-        const v =
-          at(x0, y0) * (1 - fx) * (1 - fy) +
-          at(x0 + 1, y0) * fx * (1 - fy) +
-          at(x0, y0 + 1) * (1 - fx) * fy +
-          at(x0 + 1, y0 + 1) * fx * fy;
-        const grain = rnd() * 0.14 - 0.07;
-        const val = 0.72 + v * 0.34 + grain;
-        const i = (y * size + x) * 4;
-        img.data[i] = img.data[i + 1] = img.data[i + 2] = THREE.MathUtils.clamp(val, 0, 1) * 255;
-        img.data[i + 3] = 255;
-      }
-    }
-    c.putImageData(img, 0, 0);
-    const tex = new THREE.CanvasTexture(cv);
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.anisotropy = 8;
-    return tex;
   }
 
   private makeWaterNormal() {
@@ -1014,7 +876,6 @@ export class Game {
     this.waterNormal.offset.x += dt * 0.004;
     this.waterNormal.offset.y += dt * 0.0025;
     this.updateCamera(dt);
-    this.updateDust(dt);
     this.updateMarker();
     this.updateAudio();
     if (this.miniCanvas) this.drawMini(this.miniCanvas);
@@ -1456,10 +1317,9 @@ export class Game {
     this.glareFactor = THREE.MathUtils.smoothstep(toSun, 0.55, 0.985);
     const target = this.glareGuard ? this.glareFactor : 0;
     this.gradePass.uniforms.uGlare.value += (target - this.gradePass.uniforms.uGlare.value) * (1 - Math.exp(-6 * dt));
-    this.gradePass.uniforms.uTime.value = this.time;
     this.bloom.strength = this.useBloom ? 0.14 * (1 - this.glareFactor * 0.75) : 0;
     // Slight exposure relief while sun is in view keeps the HUD readable.
-    this.renderer.toneMappingExposure = 1.02 - this.glareFactor * 0.1;
+    this.renderer.toneMappingExposure = 0.92 - this.glareFactor * 0.08;
   }
 
   private updateMarker() {

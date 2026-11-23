@@ -36,6 +36,7 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [panel, setPanel] = useState<null | 'missions' | 'map' | 'help'>(null);
   const [bloom, setBloom] = useState(true);
+  const [fogFar, setFogFar] = useState(3000);
   const idRef = useRef(0);
 
   const pushToast = useCallback((m: GameMessage) => {
@@ -88,6 +89,10 @@ export default function App() {
   useEffect(() => {
     gameRef.current?.setBloom(bloom);
   }, [bloom, ready]);
+
+  useEffect(() => {
+    gameRef.current?.setFogFar(fogFar);
+  }, [fogFar, ready]);
 
   // keys for panels
   useEffect(() => {
@@ -402,6 +407,21 @@ export default function App() {
             <label className="mt-4 flex cursor-pointer items-center gap-2 text-sm">
               <input type="checkbox" checked={bloom} onChange={(e) => setBloom(e.target.checked)} />
               Cinematic bloom &amp; HDR post-processing
+            </label>
+            <label className="mt-3 block text-sm">
+              <span className="flex items-center justify-between">
+                <span>مسافة الرؤية · View distance</span>
+                <span className="font-mono text-xs text-white/60">{Math.round(fogFar)} m</span>
+              </span>
+              <input
+                type="range"
+                min={800}
+                max={4500}
+                step={100}
+                value={fogFar}
+                onChange={(e) => setFogFar(Number(e.target.value))}
+                className="mt-1 w-full accent-amber-400"
+              />
             </label>
             <div className="mt-4 text-right">
               <button onClick={closePanel} className="rounded-lg bg-amber-400 px-4 py-1.5 text-sm font-bold text-[#2a1a05]">Back to the city</button>
