@@ -16,6 +16,11 @@ const EMPTY_HUD: HudState = {
   mission: null,
   locked: false,
   completed: [],
+  hp: 100,
+  hurt: 0,
+  weapon: null,
+  hostile: [],
+  kills: 0,
 };
 
 function fmtTime(s: number) {
@@ -136,6 +141,21 @@ export default function App() {
   return (
     <div className="fixed inset-0 overflow-hidden bg-[#d9ccb0] text-white select-none" style={{ fontFamily: '"Segoe UI", Tahoma, system-ui, sans-serif' }}>
       <div ref={mount} className="absolute inset-0" />
+      {hud.hurt > 0.01 && (
+        <div
+          className="pointer-events-none absolute inset-0 z-10"
+          style={{ boxShadow: `inset 0 0 ${120 + hud.hurt * 130}px rgba(170,10,10,${Math.min(0.75, hud.hurt)})` }}
+        />
+      )}
+      {started && !panel && hud.weapon && (
+        <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 h-6 w-6 -translate-x-1/2 -translate-y-1/2">
+          <span className="absolute left-1/2 top-1/2 h-[3px] w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/90 shadow" />
+          <span className="absolute left-1/2 top-0 h-2 w-px -translate-x-1/2 bg-white/80" />
+          <span className="absolute bottom-0 left-1/2 h-2 w-px -translate-x-1/2 bg-white/80" />
+          <span className="absolute left-0 top-1/2 h-px w-2 -translate-y-1/2 bg-white/80" />
+          <span className="absolute right-0 top-1/2 h-px w-2 -translate-y-1/2 bg-white/80" />
+        </div>
+      )}
       <div className="pointer-events-none absolute inset-0" style={{ background: 'radial-gradient(ellipse at center, transparent 55%, rgba(30,15,0,0.38) 100%)' }} />
 
       {/* loading */}
@@ -270,6 +290,46 @@ export default function App() {
             </div>
           )}
 
+          {/* health + weapon */}
+          {started && !panel && (
+            <div className="pointer-events-none absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-end gap-3">
+              <div className="rounded-2xl bg-black/55 px-4 py-2 backdrop-blur-md">
+                <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-white/60">
+                  <span>Health</span>
+                  <span className="text-white/85">{hud.hp}</span>
+                </div>
+                <div className="mt-1 h-2 w-40 overflow-hidden rounded-full bg-white/15">
+                  <div
+                    className={`h-full rounded-full transition-[width] duration-150 ${
+                      hud.hp > 55 ? 'bg-emerald-400' : hud.hp > 25 ? 'bg-amber-400' : 'bg-red-500'
+                    }`}
+                    style={{ width: `${hud.hp}%` }}
+                  />
+                </div>
+                {hud.hostile.length > 0 && (
+                  <div className="mt-1 text-[10px] font-bold uppercase tracking-wider text-red-300">
+                    ⚠ {hud.hostile.join(' · ')} hostile
+                  </div>
+                )}
+              </div>
+              {hud.weapon && (
+                <div className="rounded-2xl bg-black/55 px-4 py-2 text-right backdrop-blur-md">
+                  <div className="text-[10px] uppercase tracking-widest text-amber-300">{hud.weapon.nameAr}</div>
+                  <div className="text-2xl font-bold tabular-nums leading-none">
+                    {hud.weapon.reloading > 0 ? '…' : hud.weapon.mag}
+                    <span className="ml-1 text-sm font-medium text-white/50">/ {hud.weapon.reserve}</span>
+                  </div>
+                  {hud.weapon.reloading > 0 && (
+                    <div className="mt-1 h-1 w-24 overflow-hidden rounded-full bg-white/15">
+                      <div className="h-full bg-amber-400" style={{ width: `${hud.weapon.reloading * 100}%` }} />
+                    </div>
+                  )}
+                  <div className="mt-0.5 text-[10px] text-white/45">R reload · 1 2 3 / wheel</div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* capture hint */}
           {!hud.locked && !panel && (
             <div className="pointer-events-none absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-full bg-black/45 px-4 py-1.5 text-xs text-white/80 backdrop-blur">
@@ -395,6 +455,11 @@ export default function App() {
                 ['Space', 'Jump · handbrake in vehicles'],
                 ['E', 'Get in / out of a vehicle'],
                 ['F', 'Horn'],
+                ['1 2 3', 'Pistol · Rifle · Sniper'],
+                ['LMB', 'Fire'],
+                ['R', 'Reload'],
+                ['Q', 'Holster / draw'],
+                ['Wheel', 'Cycle weapons'],
                 ['M', 'Missions menu'],
                 ['Tab', 'Full map'],
                 ['H', 'This help'],
@@ -404,6 +469,13 @@ export default function App() {
                   <span className="text-white/80">{v}</span>
                 </div>
               ))}
+            </div>
+            <div className="mt-4 rounded-xl border border-amber-300/25 bg-amber-950/30 p-3 text-xs leading-relaxed text-white/80">
+              <div className="mb-1 font-bold text-amber-300">الجيش والدعم السريع · Armed factions</div>
+              Four checkpoints hold the capital: two <b>Sudanese Army</b> posts (downtown Khartoum and the Burj area) and two <b>Rapid Support Forces</b>{' '}
+              posts in Omdurman, each with patrols, sandbags, a flag and a mounted-gun pickup. They are <b>neutral</b> until you open fire — then that
+              faction turns hostile, hunts you and shoots back. Health regenerates after 6 s out of combat; if you go down you wake up safe with full health.
+              Downed soldiers drop rifle ammo (+20) and 120 SDG.
             </div>
             <div className="mt-4 rounded-xl bg-white/5 p-3 text-xs leading-relaxed text-white/70">
               The Blue Nile flows from the east and the White Nile from the south; they meet at <b>Al-Mogran</b> and become the Nile. <b>Khartoum</b> lies south of

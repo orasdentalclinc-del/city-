@@ -29,6 +29,8 @@ import { buildBoats, buildCity } from './city';
 import { SPECS, createVehicleMesh, type VehicleMesh, type VehicleSpec, type VehicleType } from './vehicles';
 import { createGoat, createPlayerModel, createHuman, randomHuman, type Human } from './characters';
 import { MISSIONS, SPECIAL_VEHICLES, type Mission, type Step } from './missions';
+import { FACTIONS, Military, type Faction } from './military';
+import { Effects, WEAPONS, WEAPON_ORDER, createViewModel, type WeaponId } from './weapons';
 
 export interface HudState {
   money: number;
@@ -52,6 +54,13 @@ export interface HudState {
   };
   locked: boolean;
   completed: string[];
+  /** 0-100 */
+  hp: number;
+  /** 0-1 screen damage pulse */
+  hurt: number;
+  weapon: null | { name: string; nameAr: string; mag: number; reserve: number; reloading: number };
+  hostile: string[];
+  kills: number;
 }
 
 export interface GameMessage {
@@ -144,6 +153,27 @@ export class Game {
 
   // player
   private player = { x: 58, y: 0, z: 40, heading: -Math.PI / 2, vy: 0, amp: 0, phase: 0, speed: 0 };
+  // ---- combat ----
+  private mil!: Military;
+  private effects!: Effects;
+  private weaponId: WeaponId | null = 'pistol';
+  private lastWeapon: WeaponId = 'pistol';
+  private viewModel: { group: THREE.Group; muzzle: THREE.Object3D } | null = null;
+  private ammo: Record<WeaponId, { mag: number; reserve: number }> = {
+    pistol: { mag: WEAPONS.pistol.mag, reserve: WEAPONS.pistol.reserve },
+    rifle: { mag: WEAPONS.rifle.mag, reserve: WEAPONS.rifle.reserve },
+    sniper: { mag: WEAPONS.sniper.mag, reserve: WEAPONS.sniper.reserve },
+  };
+  private fireCd = 0;
+  private reloadT = 0;
+  private firesHeld = false;
+  private recoil = 0;
+  private bob = 0;
+  private hp = 100;
+  private hurt = 0;
+  private regenT = 0;
+  private kills = 0;
+  private warnedFaction = new Set<Faction>();
   private human: Human;
   private veh: Veh | null = null;
 
@@ -335,6 +365,13 @@ export class Game {
     this.scene.add(g.group);
     this.goat = { group: g.group, legs: g.legs, x: ISLAND.x - 20, z: 0, heading: 0, follow: false, speed: 0 };
 
+    // ---- armed factions: checkpoints, patrols, technicals ----
+    this.mil = new Military(this.scene, mulberry32(23));
+    this.mil.spawn(driveable);
+    this.effects = new Effects(this.scene);
+    this.scene.add(this.camera);
+    this.equip('pistol');
+
     // ---- marker ----
     this.marker = new THREE.Group();
     const bm = new THREE.MeshBasicMaterial({ color: 0xffc83d, transparent: true, opacity: 0.32, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, side: THREE.DoubleSide });
@@ -428,6 +465,11 @@ export class Game {
       if (this.menuOpen) return;
       if (e.code === 'KeyE') this.interact();
       if (e.code === 'KeyF') this.horn();
+      if (e.code === 'Digit1') this.equip('pistol');
+      if (e.code === 'Digit2') this.equip('rifle');
+      if (e.code === 'Digit3') this.equip('sniper');
+      if (e.code === 'KeyQ') this.equip(this.weaponId ? null : this.lastWeapon);
+      if (e.code === 'KeyR') this.reload();
     };
     this.onKeyUp = (e) => this.keys.delete(e.code);
     this.onMouseMove = (e) => {
@@ -442,6 +484,17 @@ export class Game {
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('mousemove', this.onMouseMove);
     renderer.domElement.addEventListener('mousedown', this.handleDown);
+    renderer.domElement.addEventListener(
+      'wheel',
+      (e: WheelEvent) => {
+        if (this.menuOpen || this.veh) return;
+        e.preventDefault();
+        const i = this.weaponId ? WEAPON_ORDER.indexOf(this.weaponId) : 0;
+        const next = (i + (e.deltaY > 0 ? 1 : WEAPON_ORDER.length - 1)) % WEAPON_ORDER.length;
+        this.equip(WEAPON_ORDER[next]);
+      },
+      { passive: false }
+    );
     window.addEventListener('mouseup', this.handleUp);
     document.addEventListener('pointerlockchange', this.handleLock);
     this.onResize = () => {
@@ -696,12 +749,21 @@ export class Game {
   }
 
   // ---------- input handlers ----------
-  private handleDown = () => {
+  private handleDown = (e: MouseEvent) => {
     this.mouseDown = true;
-    if (!this.menuOpen && !this.locked) this.requestLock();
+    if (this.menuOpen) return;
+    if (!this.locked) {
+      this.requestLock();
+      return;
+    }
+    if (e.button === 0) {
+      this.firesHeld = true;
+      this.tryFire();
+    }
   };
   private handleUp = () => {
     this.mouseDown = false;
+    this.firesHeld = false;
   };
   private handleLock = () => {
     this.locked = document.pointerLockElement === this.renderer.domElement;
@@ -811,6 +873,7 @@ export class Game {
     this.human.armL.rotation.set(-1.1, 0, 0);
     this.human.armR.rotation.set(-1.1, 0, 0);
     this.camYaw = v.heading;
+    this.equip(null);
     this.beep([300]);
   }
 
@@ -848,6 +911,7 @@ export class Game {
     this.player.vy = 0;
     v.speed = 0;
     this.veh = null;
+    this.equip(this.lastWeapon);
     if (!silent) this.beep([240]);
   }
 
@@ -882,6 +946,7 @@ export class Game {
     this.waterNormal.offset.x += dt * 0.004;
     this.waterNormal.offset.y += dt * 0.0025;
     this.updateCamera(dt);
+    this.updateCombat(dt);
     this.updateMarker();
     this.updateAudio();
     if (this.miniCanvas) this.drawMini(this.miniCanvas);
@@ -1328,6 +1393,275 @@ export class Game {
     this.renderer.toneMappingExposure = 0.92 - this.glareFactor * 0.08;
   }
 
+  // ---------- combat ----------
+  private equip(id: WeaponId | null) {
+    if (this.viewModel) {
+      this.camera.remove(this.viewModel.group);
+      this.viewModel = null;
+    }
+    this.weaponId = id;
+    this.reloadT = 0;
+    if (!id) return;
+    this.lastWeapon = id;
+    if (this.veh) return;
+    this.viewModel = createViewModel(id);
+    const g = this.viewModel.group;
+    g.renderOrder = 10;
+    this.camera.add(g);
+    this.effects.attachFlash(this.viewModel.muzzle, new THREE.Vector3(0, 0, 0.04));
+  }
+
+  private reload() {
+    if (!this.weaponId || this.reloadT > 0) return;
+    const spec = WEAPONS[this.weaponId];
+    const slot = this.ammo[this.weaponId];
+    if (slot.mag >= spec.mag || slot.reserve <= 0) return;
+    this.reloadT = spec.reload;
+    this.beep([320, 240]);
+  }
+
+  private finishReload() {
+    if (!this.weaponId) return;
+    const spec = WEAPONS[this.weaponId];
+    const slot = this.ammo[this.weaponId];
+    const need = spec.mag - slot.mag;
+    const take = Math.min(need, slot.reserve);
+    slot.mag += take;
+    slot.reserve -= take;
+  }
+
+  private tryFire() {
+    if (this.menuOpen || this.veh || !this.weaponId) return;
+    const spec = WEAPONS[this.weaponId];
+    if (this.fireCd > 0 || this.reloadT > 0) return;
+    const slot = this.ammo[this.weaponId];
+    if (slot.mag <= 0) {
+      if (slot.reserve > 0) this.reload();
+      else {
+        this.fireCd = 0.45;
+        this.beep([170, 120]);
+      }
+      return;
+    }
+    slot.mag--;
+    this.fireCd = 60 / spec.rpm;
+    this.recoil = Math.min(1.2, this.recoil + (spec.id === 'sniper' ? 1 : spec.id === 'rifle' ? 0.5 : 0.35));
+    this.ensureAudio();
+    this.shotSound(spec.id);
+
+    const origin = this.camera.getWorldPosition(new THREE.Vector3());
+    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    dir.x += (Math.random() - 0.5) * spec.spread * 2;
+    dir.y += (Math.random() - 0.5) * spec.spread * 2;
+    dir.z += (Math.random() - 0.5) * spec.spread * 2;
+    dir.normalize();
+
+    const end = new THREE.Vector3().copy(dir).multiplyScalar(spec.range).add(origin);
+    const hit = this.mil.hitTest(origin, dir, spec.range);
+    if (hit) {
+      end.set(hit.soldier.x, hit.soldier.group.position.y + (hit.head ? 1.62 : 1.05), hit.soldier.z);
+      const killed = this.mil.damage(hit.soldier, spec.dmg * (hit.head ? 2 : 1));
+      this.effects.impact(end.x, end.y, end.z);
+      this.onHostile(hit.soldier.faction);
+      if (killed) this.onKill(hit.soldier.faction);
+    } else {
+      // hit the ground: leave a dust puff where the round lands
+      const gy = groundY(end.x, end.z);
+      if (end.y < gy) {
+        end.y = gy;
+        this.effects.impact(end.x, gy + 0.1, end.z);
+      }
+    }
+
+    const from = new THREE.Vector3();
+    if (this.viewModel) this.viewModel.muzzle.getWorldPosition(from);
+    else from.copy(origin);
+    this.effects.tracer(from, end);
+    this.effects.muzzleFlash();
+
+    // muzzle climb
+    const kick = spec.id === 'sniper' ? 0.03 : spec.id === 'rifle' ? 0.012 : 0.008;
+    this.camPitch = THREE.MathUtils.clamp(this.camPitch + kick * (0.7 + Math.random() * 0.6), -0.15, 1.3);
+    this.camYaw += (Math.random() - 0.5) * kick * 0.6;
+  }
+
+  private onHostile(f: Faction) {
+    const first = !this.mil.hostile.has(f);
+    this.mil.makeHostile(f);
+    if (first && !this.warnedFaction.has(f)) {
+      this.warnedFaction.add(f);
+      this.cb.onMessage({
+        kind: 'fail',
+        title: `⚠ ${FACTIONS[f].ar} — ${FACTIONS[f].en}`,
+        body: 'فتحت النار عليهم. الدوريات في المنطقة بقت معادية — خُد غطاء أو انسحب.',
+      });
+      this.beep([300, 220, 160]);
+    }
+  }
+
+  private onKill(f: Faction) {
+    this.kills++;
+    this.money += 120;
+    this.ammo.rifle.reserve = Math.min(WEAPONS.rifle.reserve, this.ammo.rifle.reserve + 20);
+    this.ammo.pistol.reserve = Math.min(WEAPONS.pistol.reserve, this.ammo.pistol.reserve + 6);
+    this.ammo.sniper.reserve = Math.min(WEAPONS.sniper.reserve, this.ammo.sniper.reserve + 2);
+    this.cb.onMessage({
+      kind: 'info',
+      title: `+120 SDG · ${FACTIONS[f].ar}`,
+      body: 'غنمت ذخيرة: +20 بندقية · +6 مسدس · +2 قناصة.',
+    });
+  }
+
+  private damagePlayer(dmg: number, f: Faction) {
+    if (this.hp <= 0) return;
+    this.hp = Math.max(0, this.hp - dmg);
+    this.hurt = Math.min(1, this.hurt + 0.45);
+    this.regenT = 0;
+    if (this.hp <= 0) this.respawn(f);
+  }
+
+  private respawn(f: Faction) {
+    if (this.veh) this.exitVehicle(true);
+    this.player.x = 58;
+    this.player.z = 40;
+    this.player.y = groundY(58, 40);
+    this.player.vy = 0;
+    this.camInit = false;
+    this.hp = 100;
+    this.hurt = 1;
+    this.mil.clearHostility();
+    this.warnedFaction.clear();
+    this.cb.onMessage({
+      kind: 'fail',
+      title: `أُصبت من ${FACTIONS[f].ar}`,
+      body: 'تم نقلك إلى نقطة آمنة في وسط الخرطوم. صحة كاملة، والمواجهة اتصفّرت.',
+    });
+    this.beep([220, 170, 130]);
+  }
+
+  private shotSound(id: WeaponId) {
+    const a = this.audio;
+    if (!a) return;
+    const dur = id === 'sniper' ? 0.34 : id === 'rifle' ? 0.16 : 0.12;
+    const vol = id === 'sniper' ? 0.3 : id === 'rifle' ? 0.22 : 0.16;
+    const buffer = a.createBuffer(1, Math.ceil(a.sampleRate * dur), a.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) {
+      const t = i / data.length;
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, id === 'sniper' ? 2.4 : 4);
+    }
+    const src = a.createBufferSource();
+    src.buffer = buffer;
+    const lp = a.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = id === 'sniper' ? 1400 : 2200;
+    const g = a.createGain();
+    g.gain.value = vol;
+    src.connect(lp);
+    lp.connect(g);
+    g.connect(a.destination);
+    src.start();
+    // low thump
+    const o = a.createOscillator();
+    const og = a.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(id === 'sniper' ? 120 : 170, a.currentTime);
+    o.frequency.exponentialRampToValueAtTime(48, a.currentTime + dur);
+    og.gain.setValueAtTime(vol * 0.9, a.currentTime);
+    og.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + dur);
+    o.connect(og);
+    og.connect(a.destination);
+    o.start();
+    o.stop(a.currentTime + dur + 0.02);
+  }
+
+  /** Distant enemy gunfire: quiet crack that fades with distance. */
+  private enemyFireSound(dist: number) {
+    const a = this.audio;
+    if (!a || dist > 120) return;
+    const gain = Math.max(0.02, 0.16 * (1 - dist / 120));
+    const o = a.createOscillator();
+    const g = a.createGain();
+    const lp = a.createBiquadFilter();
+    o.type = 'square';
+    lp.type = 'lowpass';
+    lp.frequency.value = 900;
+    o.frequency.value = 90 + Math.random() * 40;
+    g.gain.setValueAtTime(gain, a.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + 0.14);
+    o.connect(lp);
+    lp.connect(g);
+    g.connect(a.destination);
+    o.start();
+    o.stop(a.currentTime + 0.16);
+  }
+
+  private updateCombat(dt: number) {
+    if (this.fireCd > 0) this.fireCd -= dt;
+    if (this.reloadT > 0) {
+      this.reloadT -= dt;
+      if (this.reloadT <= 0) {
+        this.reloadT = 0;
+        this.finishReload();
+      }
+    }
+    this.recoil = Math.max(0, this.recoil - dt * 5.5);
+    this.hurt = Math.max(0, this.hurt - dt * 1.6);
+
+    // health regen out of combat
+    this.regenT += dt;
+    if (this.regenT > 6 && this.hp > 0 && this.hp < 100) this.hp = Math.min(100, this.hp + dt * 7);
+
+    if (this.firesHeld && !this.menuOpen && this.locked) {
+      const spec = this.weaponId ? WEAPONS[this.weaponId] : null;
+      if (spec && spec.auto) this.tryFire();
+    }
+
+    this.mil.update(dt, this.time, {
+      px: this.player.x,
+      py: this.player.y,
+      pz: this.player.z,
+      playerAlive: this.hp > 0,
+      groundY,
+      driveable,
+      isBlocked: (x0, z0, x1, z1) => {
+        const steps = Math.max(2, Math.ceil(Math.hypot(x1 - x0, z1 - z0) / 4));
+        for (let i = 1; i < steps; i++) {
+          const t = i / steps;
+          if (this.colliders.blocked(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t)) return true;
+        }
+        return false;
+      },
+      onEnemyFire: (x, y, z, dist) => {
+        this.enemyFireSound(dist);
+        const target = new THREE.Vector3(this.player.x, this.player.y + 1.2, this.player.z);
+        this.effects.tracer(new THREE.Vector3(x, y, z), target);
+      },
+      onPlayerHit: (dmg, f) => this.damagePlayer(dmg, f),
+      onKill: () => undefined,
+    });
+    this.effects.update(dt);
+
+    // view model sway + recoil kick
+    if (this.viewModel) {
+      const moving = this.player.speed > 1;
+      this.bob += dt * (moving ? this.player.speed * 2.2 : 1.1);
+      const base = WEAPONS[this.weaponId ?? 'pistol'];
+      const sway = moving ? 0.012 : 0.004;
+      const kick = this.recoil * (base.id === 'sniper' ? 0.09 : base.id === 'rifle' ? 0.05 : 0.035);
+      this.viewModel.group.position.set(
+        0.2 + Math.sin(this.bob) * sway,
+        -0.2 + Math.cos(this.bob * 2) * sway * 0.7 - kick * 0.25,
+        (base.id === 'sniper' ? -0.6 : base.id === 'rifle' ? -0.55 : -0.42) - kick
+      );
+      this.viewModel.group.rotation.x = -kick * 2.2;
+      this.viewModel.group.rotation.z = Math.sin(this.bob) * 0.02;
+      const rl = this.reloadT > 0 ? 1 - this.reloadT / base.reload : 0;
+      this.viewModel.group.rotation.z += rl > 0 ? Math.sin(rl * Math.PI) * 0.7 : 0;
+      this.viewModel.group.position.y -= rl > 0 ? Math.sin(rl * Math.PI) * 0.12 : 0;
+    }
+  }
+
   private updateMarker() {
     const a = this.active;
     if (!a) {
@@ -1411,6 +1745,19 @@ export class Game {
       mission,
       locked: this.locked,
       completed: [...this.completed],
+      hp: Math.round(this.hp),
+      hurt: this.hurt,
+      weapon: this.weaponId
+        ? {
+            name: WEAPONS[this.weaponId].en,
+            nameAr: WEAPONS[this.weaponId].ar,
+            mag: this.ammo[this.weaponId].mag,
+            reserve: this.ammo[this.weaponId].reserve,
+            reloading: this.reloadT > 0 ? 1 - this.reloadT / WEAPONS[this.weaponId].reload : 0,
+          }
+        : null,
+      hostile: [...this.mil.hostile].map((f) => FACTIONS[f].ar),
+      kills: this.kills,
     });
   }
 
@@ -1444,7 +1791,20 @@ export class Game {
       ctx.fill();
       ctx.stroke();
     }
-    // traffic dots
+    // soldiers: red when hostile, olive when neutral
+    for (const sd of this.mil.soldiers) {
+      if (sd.state === 'down') continue;
+      const d = Math.hypot(sd.x - p.x, sd.z - p.z);
+      if (d > viewR) continue;
+      const hostile = this.mil.hostile.has(sd.faction);
+      ctx.fillStyle = hostile ? '#ff3b30' : sd.faction === 'army' ? '#7c8a56' : '#c9b98a';
+      ctx.strokeStyle = '#1b1b1b';
+      ctx.lineWidth = 1.5 / k;
+      ctx.beginPath();
+      ctx.arc(sd.x - p.x, sd.z - p.z, 2.6 / k, 0, TAU);
+      ctx.fill();
+      ctx.stroke();
+    }
     // mission target
     const a = this.active;
     if (a) {

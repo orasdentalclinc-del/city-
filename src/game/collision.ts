@@ -28,6 +28,14 @@ export class Colliders {
     this.add({ x0: x - w / 2, x1: x + w / 2, z0: z - d / 2, z1: z + d / 2 });
   }
 
+  /** Is a point inside any building box? Used for line-of-sight checks. */
+  blocked(x: number, z: number) {
+    const arr = this.map.get(Math.floor(x / this.cell) + ',' + Math.floor(z / this.cell));
+    if (!arr) return false;
+    for (const b of arr) if (x > b.x0 && x < b.x1 && z > b.z0 && z < b.z1) return true;
+    return false;
+  }
+
   /** Push a circle out of all boxes. Returns the corrected position and whether a hit happened. */
   resolve(x: number, z: number, r: number) {
     let hit = false;
