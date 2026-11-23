@@ -81,7 +81,27 @@ function M(x: number, y: number, z: number, sx: number, sy: number, sz: number, 
   return new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(sx, sy, sz));
 }
 
-export function buildCity(ctx: BuildCtx, rng: () => number) {
+export interface BuildingRecord {
+  x: number;
+  z: number;
+  w: number;
+  d: number;
+  h: number;
+  i: number;
+  slab: number;
+  tank: number;
+  ac: number;
+}
+
+export interface CityBuild {
+  buildings: THREE.InstancedMesh;
+  slabs: THREE.InstancedMesh;
+  tanks: THREE.InstancedMesh;
+  acs: THREE.InstancedMesh;
+  records: BuildingRecord[];
+}
+
+export function buildCity(ctx: BuildCtx, rng: () => number): CityBuild {
   const palettes = {
     khartoum: [0xe8e2d2, 0xd9d4c6, 0xcfd6d9, 0xf0ebe0, 0xbfc5c8, 0xe4d9c0, 0xb7c3cc],
     bahri: [0xe9d9b8, 0xd8c7a5, 0xe7e0cf, 0xcdbf9f, 0xe3c9a3, 0xc8d3cf],
@@ -95,15 +115,22 @@ export function buildCity(ctx: BuildCtx, rng: () => number) {
   const tankM: THREE.Matrix4[] = [];
   const acM: THREE.Matrix4[] = [];
 
+  const records: BuildingRecord[] = [];
   const addBuilding = (x: number, z: number, w: number, d: number, h: number, color: THREE.Color, collide = true) => {
+    const rec: BuildingRecord = { x, z, w, d, h, i: bM.length, slab: slabM.length, tank: -1, ac: -1 };
     bM.push(M(x, -1, z, w, h + 1, d));
     bC.push(color);
     slabM.push(M(x, h + 0.25, z, w + 0.5, 0.5, d + 0.5));
     slabC.push(color.clone().multiplyScalar(1.12));
     if (rng() < 0.65) {
+      rec.tank = tankM.length;
       tankM.push(M(x + (rng() - 0.5) * (w - 3), h + 1.2, z + (rng() - 0.5) * (d - 3), 1, 1, 1));
     }
-    if (rng() < 0.7) acM.push(M(x + (rng() - 0.5) * (w - 2), h + 0.9, z + (rng() - 0.5) * (d - 2), 1.4, 0.8, 1, rng() * 3));
+    if (rng() < 0.7) {
+      rec.ac = acM.length;
+      acM.push(M(x + (rng() - 0.5) * (w - 2), h + 0.9, z + (rng() - 0.5) * (d - 2), 1.4, 0.8, 1, rng() * 3));
+    }
+    records.push(rec);
     if (collide) ctx.colliders.addCenter(x, z, w, d);
   };
 
@@ -157,11 +184,13 @@ export function buildCity(ctx: BuildCtx, rng: () => number) {
   const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.88 });
   applyWindows(wallMaterial);
   const unitUp = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
-  ctx.scene.add(instanced(unitUp, wallMaterial, bM, bC));
+  const buildingsIM = instanced(unitUp, wallMaterial, bM, bC);
+  ctx.scene.add(buildingsIM);
   const unit = new THREE.BoxGeometry(1, 1, 1);
-  ctx.scene.add(instanced(unit, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95 }), slabM, slabC));
-  ctx.scene.add(instanced(new THREE.CylinderGeometry(0.9, 0.9, 1.5, 12), new THREE.MeshStandardMaterial({ color: 0x1f1f22, roughness: 0.6, metalness: 0.2 }), tankM));
-  ctx.scene.add(instanced(unit, new THREE.MeshStandardMaterial({ color: 0xd8dadb, roughness: 0.6, metalness: 0.4 }), acM));
+  const slabsIM = instanced(unit, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95 }), slabM, slabC);
+  const tanksIM = instanced(new THREE.CylinderGeometry(0.9, 0.9, 1.5, 12), new THREE.MeshStandardMaterial({ color: 0x1f1f22, roughness: 0.6, metalness: 0.2 }), tankM);
+  const acsIM = instanced(unit, new THREE.MeshStandardMaterial({ color: 0xd8dadb, roughness: 0.6, metalness: 0.4 }), acM);
+  ctx.scene.add(slabsIM, tanksIM, acsIM);
 
   // ---- trees ----
   const palmGeo = makePalmGeo();
@@ -232,6 +261,8 @@ export function buildCity(ctx: BuildCtx, rng: () => number) {
 
   // ---- bridges ----
   for (const br of BRIDGES) buildBridge(ctx, br);
+
+  return { buildings: buildingsIM, slabs: slabsIM, tanks: tanksIM, acs: acsIM, records };
 }
 
 function buildBridge(ctx: BuildCtx, br: Bridge) {

@@ -43,6 +43,7 @@ export default function App() {
   const [bloom, setBloom] = useState(true);
   const [fogFar, setFogFar] = useState(3000);
   const [reflect, setReflect] = useState(true);
+  const [war, setWar] = useState(false);
   const idRef = useRef(0);
 
   const pushToast = useCallback((m: GameMessage) => {
@@ -104,6 +105,10 @@ export default function App() {
     gameRef.current?.setReflections(reflect);
   }, [reflect, ready]);
 
+  useEffect(() => {
+    gameRef.current?.setWar(war);
+  }, [war, ready]);
+
   // keys for panels
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -113,6 +118,7 @@ export default function App() {
         e.preventDefault();
         setPanel((p) => (p === 'map' ? null : 'map'));
       } else if (e.code === 'KeyH') setPanel((p) => (p === 'help' ? null : 'help'));
+      else if (e.code === 'KeyY') setWar((w) => !w);
       else if (e.code === 'Escape') setPanel(null);
     };
     window.addEventListener('keydown', onKey);
@@ -460,6 +466,7 @@ export default function App() {
                 ['R', 'Reload'],
                 ['Q', 'Holster / draw'],
                 ['Wheel', 'Cycle weapons'],
+                ['Y', 'War damage mode'],
                 ['M', 'Missions menu'],
                 ['Tab', 'Full map'],
                 ['H', 'This help'],
@@ -488,6 +495,10 @@ export default function App() {
             <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm">
               <input type="checkbox" checked={reflect} onChange={(e) => setReflect(e.target.checked)} />
               انعكاسات السماء على الأسطح · Surface reflections
+            </label>
+            <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm">
+              <input type="checkbox" checked={war} onChange={(e) => setWar(e.target.checked)} />
+              وضع الحرب: مبانٍ مدمّرة ودخان · War damage
             </label>
             <label className="mt-3 block text-sm">
               <span className="flex items-center justify-between">

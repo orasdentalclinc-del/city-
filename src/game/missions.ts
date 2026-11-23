@@ -192,4 +192,21 @@ export const MISSIONS: Mission[] = [
       { kind: 'goto', text: 'Visit the Mahdi’s Tomb in Omdurman.', ...p('mahdi'), radius: 10, fact: poi('mahdi').fact },
     ],
   },
+  {
+    id: 'newlandmarks',
+    title: 'The New Capital Tour',
+    titleAr: 'جولة المعالم الجديدة',
+    district: 'All cities',
+    icon: '🏛️',
+    desc: 'See the university clock tower, the alleys of Souq Al-Arabi, a plane at the airport, the stadium and Bahri’s old railway station.',
+    reward: 4200,
+    stars: 3,
+    steps: [
+      { kind: 'goto', text: 'University of Khartoum: stand under the clock tower.', ...p('university'), radius: 11, fact: poi('university').fact },
+      { kind: 'goto', text: 'Walk through Souq Al-Arabi.', ...p('arabi'), radius: 10, fact: poi('arabi').fact },
+      { kind: 'goto', text: 'Khartoum International Airport: the terminal and the control tower.', ...p('airport'), radius: 14, fact: poi('airport').fact },
+      { kind: 'goto', text: 'Khartoum Stadium: the floodlights and the stands.', ...p('stadium'), radius: 14, fact: poi('stadium').fact },
+      { kind: 'goto', text: 'Bahri Railway Station: the old platform and the waiting train.', ...p('railway'), radius: 12, fact: poi('railway').fact },
+    ],
+  },
 ];

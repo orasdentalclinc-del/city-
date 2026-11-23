@@ -25,7 +25,8 @@ import {
 } from './world';
 import { Colliders } from './collision';
 import { buildLandmarks, type BuildCtx } from './landmarks';
-import { buildBoats, buildCity } from './city';
+import { buildBoats, buildCity, type CityBuild } from './city';
+import { WarMode } from './war';
 import { SPECS, createVehicleMesh, type VehicleMesh, type VehicleSpec, type VehicleType } from './vehicles';
 import { createGoat, createPlayerModel, createHuman, randomHuman, type Human } from './characters';
 import { MISSIONS, SPECIAL_VEHICLES, type Mission, type Step } from './missions';
@@ -131,6 +132,10 @@ export class Game {
   private sun: THREE.DirectionalLight;
   private sunDir: THREE.Vector3;
   private sunBaseIntensity = 2.15;
+  private hemi!: THREE.HemisphereLight;
+  private city!: CityBuild;
+  private war!: WarMode;
+  private warOn = false;
   private glareFactor = 0;
   private waterNormal: THREE.CanvasTexture;
   private colliders = new Colliders();
@@ -286,7 +291,8 @@ export class Game {
     // Softer shadows: less harsh black/white contrast under the desert sun.
     this.sun.shadow.intensity = 0.62;
     this.scene.add(this.sun, this.sun.target);
-    this.scene.add(new THREE.HemisphereLight(0xcfe3ff, 0xcdb88c, 0.55));
+    this.hemi = new THREE.HemisphereLight(0xcfe3ff, 0xcdb88c, 0.55);
+    this.scene.add(this.hemi);
 
     // ---- ground ----
     const groundCanvas = drawGroundMap(4096);
@@ -300,7 +306,34 @@ export class Game {
     const gp = gg.attributes.position as THREE.BufferAttribute;
     for (let i = 0; i < gp.count; i++) gp.setY(i, heightAt(gp.getX(i), gp.getZ(i)));
     gg.computeVertexNormals();
-    const groundMat = new THREE.MeshStandardMaterial({ map: gtex, roughness: 0.96, metalness: 0, envMapIntensity: 0.08 });
+    const groundMat = new THREE.MeshStandardMaterial({
+      map: gtex,
+      roughness: 0.96,
+      metalness: 0,
+      envMapIntensity: 0.08,
+      bumpMap: this.makeSandBump(),
+      bumpScale: 0.22,
+    });
+    // very fine grain, only visible within ~100 m, so distant ground stays clean
+    const detailTex = this.makeSandDetail();
+    groundMat.onBeforeCompile = (shader) => {
+      shader.uniforms.uDetail = { value: detailTex };
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vWPosG;')
+        .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvWPosG = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vWPosG;\nuniform sampler2D uDetail;')
+        .replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+          {
+            vec3 det = texture2D(uDetail, vWPosG.xz * 0.08).rgb;
+            float dist = length(vWPosG - cameraPosition);
+            float fade = exp(-dist / 110.0);
+            diffuseColor.rgb *= mix(vec3(1.0), det, fade * 0.55);
+          }`
+        );
+    };
     const ground = new THREE.Mesh(gg, groundMat);
     ground.receiveShadow = true;
     this.scene.add(ground);
@@ -350,7 +383,7 @@ export class Game {
 
     // ---- city, landmarks ----
     const ctx: BuildCtx = { scene: this.scene, colliders: this.colliders, updaters: this.updaters };
-    buildCity(ctx, mulberry32(7));
+    this.city = buildCity(ctx, mulberry32(7));
     buildLandmarks(ctx, mulberry32(11));
     buildBoats(ctx, mulberry32(5));
 
@@ -369,6 +402,7 @@ export class Game {
     this.mil = new Military(this.scene, mulberry32(23));
     this.mil.spawn(driveable);
     this.effects = new Effects(this.scene);
+    this.war = new WarMode(this.scene, this.city, mulberry32(41), () => this.boomSound());
     this.scene.add(this.camera);
     this.equip('pistol');
 
@@ -528,6 +562,88 @@ export class Game {
       /* ignore */
     }
   }
+  /** War damage mode: ruins, craters, smoke and a wartime sky. */
+  setWar(on: boolean) {
+    if (on === this.warOn) return;
+    this.warOn = on;
+    this.war.setActive(on, groundY);
+    const skyU = this.sky.material.uniforms;
+    if (on) {
+      this.sun.intensity = this.sunBaseIntensity * 0.62;
+      this.sun.color.setHex(0xffd9a8);
+      this.hemi.intensity = 0.4;
+      this.hemi.color.setHex(0xc9b79c);
+      this.hemi.groundColor.setHex(0x8a7a62);
+      (this.scene.fog as THREE.Fog).color.setHex(0xb3a48f);
+      (this.scene.fog as THREE.Fog).near = 160;
+      (this.scene.fog as THREE.Fog).far = Math.min((this.scene.fog as THREE.Fog).far, 1500);
+      skyU.turbidity.value = 9.5;
+      skyU.rayleigh.value = 0.62;
+      skyU.mieCoefficient.value = 0.009;
+      this.mil.makeHostile('army');
+      this.mil.makeHostile('rsf');
+      this.warnedFaction.add('army');
+      this.warnedFaction.add('rsf');
+      this.cb.onMessage({
+        kind: 'fail',
+        title: '🔥 وضع الحرب — War damage',
+        body: `${this.war.count} مبنى مدمّر في الخرطوم وأم درمان وبحري، أعمدة دخان في السما، والنقاط كلها معادية.`,
+      });
+    } else {
+      this.sun.intensity = this.sunBaseIntensity;
+      this.sun.color.setHex(0xfff1d6);
+      this.hemi.intensity = 0.55;
+      this.hemi.color.setHex(0xcfe3ff);
+      this.hemi.groundColor.setHex(0xcdb88c);
+      (this.scene.fog as THREE.Fog).color.setHex(0xd8d0bd);
+      (this.scene.fog as THREE.Fog).near = 700;
+      (this.scene.fog as THREE.Fog).far = 3000;
+      skyU.turbidity.value = 4.2;
+      skyU.rayleigh.value = 1.0;
+      skyU.mieCoefficient.value = 0.0032;
+      this.mil.clearHostility();
+      this.warnedFaction.clear();
+      this.cb.onMessage({ kind: 'info', title: 'عادت المدينة لهدوءها', body: 'وضع الحرب اتقفل — المباني رجعت زي ما كانت.' });
+    }
+    this.beep(on ? [180, 140] : [320, 420]);
+  }
+
+  /** Distant explosion rumble used by the war layer. */
+  private boomSound() {
+    const a = this.audio;
+    if (!a) return;
+    const dur = 1.1;
+    const buffer = a.createBuffer(1, Math.ceil(a.sampleRate * dur), a.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) {
+      const t = i / data.length;
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 3.2);
+    }
+    const src = a.createBufferSource();
+    src.buffer = buffer;
+    const lp = a.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 320;
+    const g = a.createGain();
+    g.gain.value = 0.34;
+    src.connect(lp);
+    lp.connect(g);
+    g.connect(a.destination);
+    src.start();
+    const o = a.createOscillator();
+    const og = a.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(58, a.currentTime);
+    o.frequency.exponentialRampToValueAtTime(24, a.currentTime + 0.9);
+    og.gain.setValueAtTime(0.25, a.currentTime);
+    og.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + 1.0);
+    o.connect(og);
+    og.connect(a.destination);
+    o.start();
+    o.stop(a.currentTime + 1.05);
+    this.shake = Math.max(this.shake, 0.12);
+  }
+
   /** Sky reflections on glass/metal/paint (main source of surface glare). */
   setReflections(on: boolean) {
     this.scene.environmentIntensity = on ? 0.16 : 0;
@@ -707,6 +823,57 @@ export class Game {
       this.peds.push({ human, axis, fixed, v, lo, hi, dir: this.rng() < 0.5 ? -1 : 1, speed: 1.1 + this.rng() * 1.2, phase: this.rng() * 6, x: p0.x, z: p0.z });
       n++;
     }
+  }
+
+  /** Fine sand grain used as a bump map so the ground has real relief up close. */
+  private makeSandBump() {
+    const size = 256;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = size;
+    const c = cv.getContext('2d')!;
+    const img = c.createImageData(size, size);
+    const rnd = mulberry32(1234);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        // fine grain + a faint wind ripple so nearby ground reads as sand
+        const ripple = Math.sin((x / size) * Math.PI * 2 * 9 + Math.sin((y / size) * Math.PI * 2 * 2) * 2) * 0.16;
+        const v = 0.5 + (rnd() - 0.5) * 0.62 + ripple;
+        const i = (y * size + x) * 4;
+        img.data[i] = img.data[i + 1] = img.data[i + 2] = THREE.MathUtils.clamp(v, 0, 1) * 255;
+        img.data[i + 3] = 255;
+      }
+    }
+    c.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(520, 520);
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  /** Fine colour grain for the ground: breaks up the blurry base map up close. */
+  private makeSandDetail() {
+    const size = 256;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = size;
+    const c = cv.getContext('2d')!;
+    const img = c.createImageData(size, size);
+    const rnd = mulberry32(555);
+    for (let i = 0; i < size * size; i++) {
+      const n = rnd();
+      const warm = rnd() > 0.5;
+      const v = 0.82 + n * 0.36;
+      img.data[i * 4] = THREE.MathUtils.clamp(v * (warm ? 1.04 : 0.97), 0, 1) * 255;
+      img.data[i * 4 + 1] = THREE.MathUtils.clamp(v * 0.99, 0, 1) * 255;
+      img.data[i * 4 + 2] = THREE.MathUtils.clamp(v * (warm ? 0.93 : 1.03), 0, 1) * 255;
+      img.data[i * 4 + 3] = 255;
+    }
+    c.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(420, 420);
+    tex.anisotropy = 8;
+    return tex;
   }
 
   private makeWaterNormal() {
@@ -1390,7 +1557,7 @@ export class Game {
     this.gradePass.uniforms.uGlare.value += (target - this.gradePass.uniforms.uGlare.value) * (1 - Math.exp(-6 * dt));
     this.bloom.strength = this.useBloom ? 0.12 * (1 - this.glareFactor * 0.75) : 0;
     // Slight exposure relief while sun is in view keeps the HUD readable.
-    this.renderer.toneMappingExposure = 0.92 - this.glareFactor * 0.08;
+    this.renderer.toneMappingExposure = (this.warOn ? 0.8 : 0.92) - this.glareFactor * 0.08;
   }
 
   // ---------- combat ----------
@@ -1641,6 +1808,7 @@ export class Game {
       onKill: () => undefined,
     });
     this.effects.update(dt);
+    this.war.update(dt, this.time);
 
     // view model sway + recoil kick
     if (this.viewModel) {

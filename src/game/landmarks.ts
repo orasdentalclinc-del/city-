@@ -29,19 +29,52 @@ export function applyWindows(m: THREE.MeshStandardMaterial) {
         vWNorm = normalize(mat3(modelMatrix) * wn);`
       );
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;\nvarying vec3 vWNorm;')
+      .replace(
+        '#include <common>',
+        `#include <common>
+        varying vec3 vWPos;
+        varying vec3 vWNorm;
+        float facHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }`
+      )
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
         if (abs(vWNorm.y) < 0.5) {
+          // window grid laid out in world space so it tiles across a whole block
           float u = dot(vWPos.xz, vec2(-vWNorm.z, vWNorm.x));
           float fx = fract(u / 3.3);
           float fy = fract(vWPos.y / 3.1);
           float win = step(0.2, fx) * step(fx, 0.74) * step(0.32, fy) * step(fy, 0.82);
-          win *= step(0.6, vWPos.y);
+          win *= step(0.9, vWPos.y);
           float frame = step(0.14, fx) * step(fx, 0.8) * step(0.26, fy) * step(fy, 0.88) * (1.0 - win);
-          diffuseColor.rgb *= 1.0 - frame * 0.18;
-          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.07, 0.11, 0.15), win * 0.88);
+
+          // plaster / paint grain, two octaves
+          float g1 = facHash(floor(vWPos.xz * 5.0 + vWPos.y * 2.0));
+          float g2 = facHash(floor(vWPos.xz * 21.0 - vWPos.y * 9.0));
+          diffuseColor.rgb *= 0.93 + g1 * 0.1 + g2 * 0.04;
+
+          // horizontal floor joints + slab band
+          float joint = 1.0 - smoothstep(0.0, 0.035, min(fy, 1.0 - fy));
+          diffuseColor.rgb *= 1.0 - joint * 0.14;
+
+          // sun-bleached top, grimy plinth at street level
+          diffuseColor.rgb *= mix(0.78, 1.0, smoothstep(0.15, 1.6, vWPos.y));
+
+          // weep streaks running down the facade
+          float streak = smoothstep(0.55, 0.95, sin(u * 2.3 + g1 * 6.2831) * 0.5 + 0.5);
+          diffuseColor.rgb *= 1.0 - streak * 0.055;
+
+          // frame shading + recessed glass with per-window variation
+          diffuseColor.rgb *= 1.0 - frame * 0.2;
+          float wid = floor(u / 3.3) * 13.7 + floor(vWPos.y / 3.1) * 7.9;
+          float vary = facHash(vec2(wid, 3.1));
+          vec3 glass = mix(vec3(0.055, 0.085, 0.12), vec3(0.17, 0.24, 0.3), vary);
+          // upper part of the glass catches the sky, lower part stays dark
+          glass += vec3(0.05, 0.07, 0.09) * smoothstep(0.5, 0.82, fy) * (0.35 + vary * 0.5);
+          diffuseColor.rgb = mix(diffuseColor.rgb, glass, win * 0.92);
+          // sill highlight under each window
+          float sill = (1.0 - smoothstep(0.29, 0.34, fy)) * step(0.2, fx) * step(fx, 0.74) * step(0.2, fy);
+          diffuseColor.rgb *= 1.0 + sill * 0.12;
         }`
       );
   };
@@ -601,6 +634,267 @@ function souqGate(ctx: BuildCtx) {
   ctx.colliders.addCenter(-96, -7, 2, 2);
 }
 
+// ---------- newer landmarks ----------
+
+function university(ctx: BuildCtx, g: THREE.Group) {
+  const wall = wallMat(0xe7dcc0);
+  // main hall with colonnade
+  box(g, 26, 9, 15, wall, 0, 4.5, 0);
+  box(g, 27.4, 0.9, 16.4, plaster, 0, 9.4, 0);
+  for (let i = 0; i < 9; i++) cyl(g, 0.45, 0.5, 5.4, plaster, -11 + i * 2.75, 2.7, 8.4, 12);
+  box(g, 25, 0.7, 3.4, plaster, 0, 5.6, 8.4);
+  box(g, 26, 0.35, 0.8, stone, 0, 0.18, 9.6);
+  // central clock tower
+  box(g, 6.6, 20, 6.6, wall, 0, 10, 0);
+  box(g, 7.4, 1.2, 7.4, plaster, 0, 20.4, 0);
+  cyl(g, 3.2, 3.6, 2.6, plaster, 0, 22.3, 0, 20);
+  dome(g, 3.5, domeGreen, 0, 23.5, 0, 1.15);
+  cyl(g, 0.12, 0.12, 2.6, gold, 0, 27.2, 0, 6);
+  for (const [dx, dz, ry] of [[0, 3.35, 0], [0, -3.35, Math.PI], [3.35, 0, Math.PI / 2], [-3.35, 0, -Math.PI / 2]] as const) {
+    const face = new THREE.Mesh(new THREE.PlaneGeometry(3.1, 3.1), new THREE.MeshStandardMaterial({ map: clockTexture(), roughness: 0.6 }));
+    face.position.set(dx, 17.4, dz);
+    face.rotation.y = ry;
+    g.add(face);
+  }
+  // lawns and paths
+  box(g, 34, 0.12, 2.4, plain(0xd9d2bd, 0.95), 0, 0.06, 12);
+  box(g, 34, 0.1, 12, lawn, 0, 0.05, -1);
+  addFlag(ctx, g, 12, 0, 12, 12);
+  const sign = makeSign('جامعة الخرطوم', 8, 1.6, '#0b5d3a', '#ffffff', 'UNIVERSITY OF KHARTOUM');
+  sign.position.set(0, 3.2, 13.2);
+  g.add(sign);
+  for (const x of [-15, 15]) box(g, 0.3, 3.2, 0.3, stone, x, 1.6, 13.2);
+  addLocalBox(ctx, g, -20, 20, -12, 10);
+}
+
+function arabiMarket(ctx: BuildCtx, g: THREE.Group, rng: () => number) {
+  const wall = wallMat(0xe4d6b4);
+  box(g, 34, 6, 26, wall, 0, 3, 0);
+  box(g, 35, 0.7, 27, plaster, 0, 6.3, 0);
+  // arcade in front
+  for (let i = 0; i < 8; i++) {
+    cyl(g, 0.42, 0.5, 5.2, plaster, -14 + i * 4, 2.6, 12, 12);
+    const arch = new THREE.Mesh(new THREE.TorusGeometry(2, 0.24, 6, 12, Math.PI), plaster);
+    arch.position.set(-12 + i * 4, 5.2, 12);
+    g.add(arch);
+  }
+  // striped canopies over the stalls
+  const cloth = [0xc0392b, 0x2e86ab, 0xf1c40f, 0x16a085, 0xe67e22, 0xeaeaea];
+  for (let i = 0; i < 10; i++) {
+    const cx = -15 + (i % 5) * 7.5;
+    const cz = 15.5 + Math.floor(i / 5) * 7;
+    const col = cloth[Math.floor(rng() * cloth.length)];
+    box(g, 3.4, 0.75, 1.1, plain(col, 0.85), cx, 0.9, cz);
+    box(g, 3.6, 0.08, 2.6, plain(col, 0.8), cx, 2.6, cz);
+    for (const dx of [-1.6, 1.6]) box(g, 0.08, 2.1, 0.08, plain(0x8a8a8a, 0.5, 0.5), cx + dx, 1.05, cz + 1.1);
+    box(g, 0.9, 0.4, 0.9, plain([0xb5321e, 0xe5c13a, 0x4c7a2a][Math.floor(rng() * 3)], 0.9), cx, 1.45, cz - 0.1);
+  }
+  const sign = makeSign('السوق العربي', 9, 1.8, '#8a3b12', '#fff3d0', 'SOUQ AL-ARABI');
+  sign.position.set(0, 8.4, 13.4);
+  g.add(sign);
+  addLocalBox(ctx, g, -18, 18, -14, 13);
+}
+
+function airport(ctx: BuildCtx, g: THREE.Group) {
+  // terminal with a glass front
+  box(g, 46, 10, 22, wallMat(0xdfdcd2), 0, 5, 0);
+  box(g, 47, 0.8, 23, plaster, 0, 10.4, 0);
+  box(g, 40, 7, 0.5, towerGlass, 0, 5, 11.2);
+  for (let i = 0; i < 9; i++) box(g, 0.5, 9, 0.6, plain(0xbdbab0, 0.7), -20 + i * 5, 4.5, 11.6);
+  box(g, 52, 0.35, 6, plain(0xb0aca2, 0.95), 0, 0.18, 14.5);
+  // control tower
+  cyl(g, 3.4, 4.2, 20, wallMat(0xe8e4d8), 20, 10, -4, 18);
+  cyl(g, 5.2, 3.6, 3.4, towerGlass, 20, 21.6, -4, 18);
+  cyl(g, 5.6, 5.4, 0.5, plaster, 20, 23.6, -4, 18);
+  cyl(g, 0.14, 0.14, 6, plain(0xb8b8b8, 0.5, 0.7), 20, 26.8, -4, 6);
+  // parked aircraft
+  const plane = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.3, 22, 14), plain(0xf2f2ee, 0.5, 0.15));
+  body.rotation.z = Math.PI / 2;
+  body.position.y = 2.3;
+  plane.add(body);
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(1.5, 3.4, 14), plain(0xf2f2ee, 0.5, 0.15));
+  nose.rotation.z = -Math.PI / 2;
+  nose.position.set(12.6, 2.3, 0);
+  plane.add(nose);
+  const wing = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.35, 26), plain(0xe4e4e0, 0.6));
+  wing.position.set(1.5, 2.1, 0);
+  plane.add(wing);
+  const tail = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.3, 7), plain(0xe4e4e0, 0.6));
+  tail.position.set(-9, 3.3, 0);
+  plane.add(tail);
+  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.35, 4.6, 4.2), plain(0x1f5fa8, 0.6));
+  fin.position.set(-9.6, 4.8, 0);
+  plane.add(fin);
+  for (const dz of [-1.2, 1.2]) {
+    const eng = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.85, 3.4, 12), plain(0xc8c8c4, 0.5, 0.3));
+    eng.rotation.z = Math.PI / 2;
+    eng.position.set(2.6, 1.4, dz * 8);
+    plane.add(eng);
+  }
+  plane.traverse((o) => {
+    if (o instanceof THREE.Mesh) {
+      o.castShadow = true;
+      o.receiveShadow = true;
+    }
+  });
+  plane.position.set(-6, 0, 24);
+  g.add(plane);
+  // runway edge lights
+  for (let i = 0; i < 10; i++) {
+    for (const dz of [-11, 11]) {
+      const l = new THREE.Mesh(new THREE.SphereGeometry(0.28, 6, 6), new THREE.MeshStandardMaterial({ color: 0x556677, emissive: 0x66aaff, emissiveIntensity: 0.4 }));
+      l.position.set(-23 + i * 10, 0.35, 8 + dz);
+      g.add(l);
+    }
+  }
+  const sign = makeSign('مطار الخرطوم الدولي', 12, 2.1, '#123a63', '#ffffff', 'KHARTOUM INTERNATIONAL');
+  sign.position.set(0, 12.6, 11.4);
+  g.add(sign);
+  addFlag(ctx, g, -25, 0, 14, 13);
+  addLocalBox(ctx, g, -23, 23, -11, 11);
+}
+
+function stadium(ctx: BuildCtx, g: THREE.Group, rng: () => number) {
+  // pitch
+  box(g, 30, 0.12, 20, lawn, 0, 0.06, 0);
+  box(g, 26, 0.06, 16, plain(0x4e7a2c, 0.95), 0, 0.12, 0);
+  // stepped stands ring
+  const seatCols = [0x2e6fa8, 0xf0f0f0, 0x2e6fa8];
+  for (let ring = 0; ring < 3; ring++) {
+    const rad = 17 + ring * 2.6;
+    const y = 0.9 + ring * 1.5;
+    const seg = 44;
+    for (let i = 0; i < seg; i++) {
+      const a = (i / seg) * Math.PI * 2;
+      const x = Math.cos(a) * rad * 1.25;
+      const z = Math.sin(a) * rad * 0.85;
+      const b = box(g, 2.6, 1.5, 1.5, plain(seatCols[(ring + i) % 3], 0.85), x, y, z);
+      b.rotation.y = -a;
+    }
+  }
+  // floodlight pylons
+  for (const [x, z] of [[-24, -20], [24, -20], [-24, 20], [24, 20]]) {
+    cyl(g, 0.24, 0.4, 22, plain(0xb8b8b4, 0.6, 0.4), x, 11, z, 8);
+    box(g, 4.4, 1.1, 0.5, plain(0x333333, 0.6), x, 22.4, z);
+    for (let i = 0; i < 4; i++) box(g, 0.7, 0.7, 0.12, new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff2cc, emissiveIntensity: 0.5 }), x - 1.5 + i, 22.4, z + 0.3);
+  }
+  const sign = makeSign('استاد الخرطوم', 9, 1.8, '#0b3d2e', '#ffffff', 'KHARTOUM STADIUM');
+  sign.position.set(0, 6.5, 15.5);
+  g.add(sign);
+  for (const x of [-4, 4]) cyl(g, 0.2, 0.2, 6, stone, x, 3, 15.5, 6);
+  addFlag(ctx, g, 18, 0, 14, 12);
+  void rng;
+  addLocalBox(ctx, g, -26, 26, -19, 19);
+}
+
+function railway(ctx: BuildCtx, g: THREE.Group) {
+  const wall = wallMat(0xdcc9a8);
+  // station hall with clock
+  box(g, 26, 9, 12, wall, -6, 4.5, -2);
+  box(g, 27, 0.8, 13, plaster, -6, 9.4, -2);
+  box(g, 5, 3.4, 0.4, plain(0x6b4a2a, 0.7), -6, 2.2, 4.2);
+  const clock = new THREE.Mesh(new THREE.PlaneGeometry(3, 3), new THREE.MeshStandardMaterial({ map: clockTexture(), roughness: 0.6 }));
+  clock.position.set(-6, 7.2, 4.05);
+  g.add(clock);
+  // platform canopy
+  box(g, 40, 0.4, 8, plain(0x9aa0a4, 0.7, 0.3), 0, 5.2, 8);
+  for (let i = 0; i < 7; i++) cyl(g, 0.18, 0.18, 5.2, plain(0x8a8f92, 0.6, 0.4), -18 + i * 6, 2.6, 8, 8);
+  // tracks
+  for (const dz of [-2.2, -1.0]) box(g, 46, 0.16, 0.18, plain(0x6a6a6e, 0.6, 0.6), 0, 0.2, 12 + dz);
+  for (let i = 0; i < 34; i++) box(g, 0.5, 0.12, 2.6, plain(0x4a3826, 0.95), -21 + i * 1.35, 0.12, 11.9);
+  // a waiting train
+  const train = new THREE.Group();
+  const livery = plain(0x1f5fa8, 0.6, 0.2);
+  const body = new THREE.Mesh(new THREE.BoxGeometry(9, 2.6, 2.6), livery);
+  body.position.set(0, 1.6, 0);
+  train.add(body);
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.5, 2.4), plain(0x163f6f, 0.6, 0.2));
+  cab.position.set(-4.4, 2.5, 0);
+  train.add(cab);
+  const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.42, 1.4, 10), plain(0x2a2a2a, 0.8));
+  stack.position.set(3.4, 3.3, 0);
+  train.add(stack);
+  for (const dx of [-3, -1, 1, 3]) {
+    for (const dz of [-1.1, 1.1]) {
+      const w = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.24, 12), plain(0x1b1b1b, 0.9));
+      w.rotation.x = Math.PI / 2;
+      w.position.set(dx, 0.62, dz);
+      train.add(w);
+    }
+  }
+  train.traverse((o) => {
+    if (o instanceof THREE.Mesh) {
+      o.castShadow = true;
+      o.receiveShadow = true;
+    }
+  });
+  train.position.set(8, 0, 9.7);
+  g.add(train);
+  const sign = makeSign('محطة سكة حديد بحري', 11, 2, '#123a63', '#ffffff', 'BAHRI RAILWAY STATION');
+  sign.position.set(-6, 11, 4.1);
+  g.add(sign);
+  addLocalBox(ctx, g, -20, 20, -9, 5);
+}
+
+function tutiMosque(ctx: BuildCtx) {
+  const g = new THREE.Group();
+  g.position.set(100, 0.32, 6);
+  const wall = wallMat(0xf6f1e2);
+  box(g, 9, 5, 9, wall, 0, 2.5, 0);
+  box(g, 10, 0.5, 10, plaster, 0, 5.2, 0);
+  cyl(g, 3.6, 3.8, 1.6, plaster, 0, 5.9, 0, 20);
+  dome(g, 3.7, domeGreen, 0, 6.6, 0, 1.05);
+  cyl(g, 0.1, 0.1, 2.2, gold, 0, 10.2, 0, 6);
+  // minaret
+  cyl(g, 1.0, 1.4, 12, wall, 6.6, 6, 4.6, 14);
+  cyl(g, 1.5, 1.5, 0.4, stone, 6.6, 12.2, 4.6, 14);
+  cyl(g, 0.75, 0.9, 3.2, plaster, 6.6, 14, 4.6, 12);
+  dome(g, 0.95, domeGreen, 6.6, 15.7, 4.6, 1.4);
+  cyl(g, 0.06, 0.06, 1.6, gold, 6.6, 17, 4.6, 6);
+  // palm trees and mud-brick huts around the yard
+  const trunk = plain(0x7d6141, 0.9);
+  const leaf = plain(0x3f7d2a, 0.9);
+  const palm = (x: number, z: number, s = 1) => {
+    const p = new THREE.Group();
+    const t = new THREE.Mesh(new THREE.CylinderGeometry(0.16 * s, 0.28 * s, 6.5 * s, 7), trunk);
+    t.position.y = 3.25 * s;
+    t.castShadow = true;
+    p.add(t);
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2;
+      const frond = new THREE.Mesh(new THREE.ConeGeometry(0.35 * s, 3.2 * s, 4), leaf);
+      frond.position.set(Math.cos(a) * 1.1 * s, 6.4 * s, Math.sin(a) * 1.1 * s);
+      frond.rotation.z = Math.cos(a) * 1.15;
+      frond.rotation.x = -Math.sin(a) * 1.15;
+      frond.castShadow = true;
+      p.add(frond);
+    }
+    p.position.set(x, 0, z);
+    g.add(p);
+  };
+  palm(-9, -4, 1);
+  palm(9, -6, 0.9);
+  palm(-7, 8, 0.8);
+  const mud = new THREE.MeshStandardMaterial({ color: 0xb99a68, roughness: 0.95 });
+  for (const [x, z, w] of [[-13, 2, 4.4], [13, 2, 4], [-12, -10, 3.6]] as const) {
+    const hut = new THREE.Mesh(new THREE.CylinderGeometry(w / 2, w / 2, 2.4, 12), mud);
+    hut.position.set(x, 1.2, z);
+    hut.castShadow = hut.receiveShadow = true;
+    g.add(hut);
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(w * 0.8, 1.3, 12), plain(0x8d6f42, 0.95));
+    roof.position.set(x, 3.0, z);
+    roof.castShadow = true;
+    g.add(roof);
+  }
+  const sign = makeSign('مسجد توتي', 5.5, 1.2, '#0b5d3a', '#ffffff', 'TUTI ISLAND');
+  sign.position.set(0, 3.6, 4.9);
+  g.add(sign);
+  ctx.scene.add(g);
+  ctx.colliders.addCenter(100, 6, 9, 9);
+  ctx.colliders.addCenter(106.6, 10.6, 2.4, 2.4);
+}
+
 export function buildLandmarks(ctx: BuildCtx, rng: () => number) {
   const builders: Record<string, (c: BuildCtx, g: THREE.Group) => void> = {
     palace,
@@ -613,6 +907,11 @@ export function buildLandmarks(ctx: BuildCtx, rng: () => number) {
     omdhosp: (c, g) => hospital(c, g, 'مستشفى أم درمان'),
     mahdi,
     khalifa,
+    university,
+    arabi: (c, g) => arabiMarket(c, g, rng),
+    airport,
+    stadium: (c, g) => stadium(c, g, rng),
+    railway,
   };
   for (const p of POIS as POI[]) {
     const b = builders[p.id];
@@ -629,5 +928,6 @@ export function buildLandmarks(ctx: BuildCtx, rng: () => number) {
   mogran(ctx);
   teaStall(ctx);
   souqGate(ctx);
+  tutiMosque(ctx);
   void lawn;
 }
